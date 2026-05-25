@@ -30,11 +30,25 @@ namespace net {
         _init = true;
     }
 
-    bool queryHost(uint32_t* addr, std::string host) {
-        hostent* ent = gethostbyname(host.c_str());
-        if (!ent || !ent->h_addr_list[0]) { return false; }
-        *addr = *(uint32_t*)ent->h_addr_list[0];
-        return true;
+    bool queryHost(in_addr_t* addr, const std::string& host) {
+        addrinfo hints = {};
+        hints.ai_family = AF_INET;
+
+        addrinfo* results = nullptr;
+        if (getaddrinfo(host.c_str(), nullptr, &hints, &results) != 0) {
+            return false;
+        }
+
+        for (auto const* result = results; result; result = result->ai_next) {
+            if (result->ai_addr && result->ai_addrlen >= sizeof(sockaddr_in)) {
+                *addr = ((sockaddr_in*)result->ai_addr)->sin_addr.s_addr;
+                freeaddrinfo(results);
+                return true;
+            }
+        }
+
+        freeaddrinfo(results);
+        return false;
     }
 
     void closeSocket(SockHandle_t sock) {
@@ -67,15 +81,15 @@ namespace net {
         init();
         
         // Lookup host
-        hostent* ent = gethostbyname(host.c_str());
-        if (!ent || !ent->h_addr_list[0]) {
+        in_addr_t resolvedAddr;
+        if (!queryHost(&resolvedAddr, host)) {
             throw std::runtime_error("Unknown host");
         }
         
         // Build address
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = *(uint32_t*)ent->h_addr_list[0];
+        addr.sin_addr.s_addr = resolvedAddr;
         addr.sin_port = htons(port);
     }
 
@@ -355,7 +369,7 @@ namespace net {
         return std::make_shared<Listener>(s);
     }
 
-    std::shared_ptr<Listener> listen(std::string host, int port) {
+    std::shared_ptr<Listener> listen(const std::string &host, int port) {
         return listen(Address(host, port));
     }
 
@@ -380,7 +394,7 @@ namespace net {
         return std::make_shared<Socket>(s);
     }
 
-    std::shared_ptr<Socket> connect(std::string host, int port) {
+    std::shared_ptr<Socket> connect(const std::string &host, int port) {
         return connect(Address(host, port));
     }
 
@@ -414,15 +428,15 @@ namespace net {
         return std::make_shared<Socket>(s, &raddr);
     }
 
-    std::shared_ptr<Socket> openudp(std::string rhost, int rport, const Address& laddr, bool allowBroadcast) {
+    std::shared_ptr<Socket> openudp(const std::string &rhost, int rport, const Address& laddr, bool allowBroadcast) {
         return openudp(Address(rhost, rport), laddr, allowBroadcast);
     }
 
-    std::shared_ptr<Socket> openudp(const Address& raddr, std::string lhost, int lport, bool allowBroadcast) {
+    std::shared_ptr<Socket> openudp(const Address& raddr, const std::string &lhost, int lport, bool allowBroadcast) {
         return openudp(raddr, Address(lhost, lport), allowBroadcast);
     }
 
-    std::shared_ptr<Socket> openudp(std::string rhost, int rport, std::string lhost, int lport, bool allowBroadcast) {
+    std::shared_ptr<Socket> openudp(const std::string &rhost, int rport, const std::string &lhost, int lport, bool allowBroadcast) {
         return openudp(Address(rhost, rport), Address(lhost, lport), allowBroadcast);
     }
 }
