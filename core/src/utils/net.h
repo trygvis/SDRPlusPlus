@@ -249,6 +249,7 @@ namespace net {
      * @param raddr Remote address. Set to a multicast address to allow multicast.
      * @param laddr Local address to bind the socket to.
      * @return Socket instance on success, Throws runtime_error otherwise.
+     * @param allowBroadcast enable SO_BROADCAST if true
      */
     std::shared_ptr<Socket> openudp(const Address& raddr, const Address& laddr, bool allowBroadcast = false);
 
@@ -257,6 +258,7 @@ namespace net {
      * @param rhost Remote hostname or IP address. Set to a multicast address to allow multicast.
      * @param rport Remote port.
      * @param laddr Local address to bind the socket to.
+     * @param allowBroadcast enable SO_BROADCAST if true
      * @return Socket instance on success, Throws runtime_error otherwise.
      */
     std::shared_ptr<Socket> openudp(std::string rhost, int rport, const Address& laddr, bool allowBroadcast = false);
@@ -265,7 +267,8 @@ namespace net {
      * Create UDP socket.
      * @param raddr Remote address. Set to a multicast or broadcast address to allow multicast.
      * @param lhost Local hostname or IP used to bind the socket (optional, "0.0.0.0" for Any).
-     * @param lpost Local port used to bind the socket to (optional, 0 to allocate automatically).
+     * @param lport Local port used to bind the socket to (optional, 0 to allocate automatically).
+     * @param allowBroadcast enable SO_BROADCAST if true
      * @return Socket instance on success, Throws runtime_error otherwise.
      */
     std::shared_ptr<Socket> openudp(const Address& raddr, std::string lhost = "0.0.0.0", int lport = 0, bool allowBroadcast = false);
@@ -275,7 +278,8 @@ namespace net {
      * @param rhost Remote hostname or IP address. Set to a multicast or broadcast address to allow multicast.
      * @param rport Remote port.
      * @param lhost Local hostname or IP used to bind the socket (optional, "0.0.0.0" for Any).
-     * @param lpost Local port used to bind the socket to (optional, 0 to allocate automatically).
+     * @param lport Local port used to bind the socket to (optional, 0 to allocate automatically).
+     * @param allowBroadcast enable SO_BROADCAST if true
      * @return Socket instance on success, Throws runtime_error otherwise.
      */
     std::shared_ptr<Socket> openudp(std::string rhost, int rport, std::string lhost = "0.0.0.0", int lport = 0, bool allowBroadcast = false);  
