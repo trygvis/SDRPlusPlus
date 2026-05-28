@@ -43,6 +43,19 @@ namespace net {
     class Address {
         friend Socket;
         friend Listener;
+        friend std::shared_ptr<Listener> listen(const Address& addr);
+        friend std::shared_ptr<Socket> connect(const Address& addr);
+        friend std::shared_ptr<Socket> openudp(const Address& raddr, const Address& laddr, bool allowBroadcast);
+
+        /**
+         * The underlying address. This is a generic type that supports `sockaddr_in` and `sockaddr_in6`.
+         */
+        sockaddr_storage storage;
+
+        /**
+         * The actual size of the object stored in `storage`.
+         */
+        socklen_t len;
     public:
         /**
          * Default constructor. Corresponds to 0.0.0.0:0.
@@ -92,8 +105,6 @@ namespace net {
          * @param port TCP/UDP port number.
          */
         void setPort(int port);
-
-        struct sockaddr_in addr;
     };
 
     enum {

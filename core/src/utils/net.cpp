@@ -1,5 +1,7 @@
 #include "net.h"
-#include <string.h>
+#include "flog.h"
+#include <arpa/inet.h>
+#include <cstring>
 #include <codecvt>
 #include <stdexcept>
 
@@ -30,25 +32,56 @@ namespace net {
         _init = true;
     }
 
-    bool queryHost(in_addr_t* addr, const std::string& host) {
-        addrinfo hints = {};
-        hints.ai_family = AF_INET;
+    static bool queryHost(sockaddr_storage* storage, socklen_t*len, const std::string& host, int port) {
+        flog::info("Resolving host={}, service={}", host, port);
 
+        const addrinfo hints = {
+            .ai_flags = AI_ADDRCONFIG, // Only return values for which there are an interface with an address within the same address family.
+        };
+
+        auto portStr = std::to_string(port);
         addrinfo* results = nullptr;
-        if (getaddrinfo(host.c_str(), nullptr, &hints, &results) != 0) {
+        if (getaddrinfo(host.c_str(), portStr.c_str(), &hints, &results)) {
+            flog::warn("resolving failed: {}", gai_strerror(getaddrinfo(host.c_str(), portStr.c_str(), &hints, &results)));
             return false;
         }
 
+        bool success = false;
         for (auto const* result = results; result; result = result->ai_next) {
             if (result->ai_addr && result->ai_addrlen >= sizeof(sockaddr_in)) {
-                *addr = ((sockaddr_in*)result->ai_addr)->sin_addr.s_addr;
-                freeaddrinfo(results);
-                return true;
+
+                char hostBuf[NI_MAXHOST];
+                char serviceBuf[NI_MAXSERV];
+                getnameinfo(
+                    result->ai_addr,
+                    result->ai_addrlen,
+                    hostBuf,
+                    sizeof(hostBuf),
+                    serviceBuf,
+                    sizeof(serviceBuf),
+                    NI_NUMERICHOST | NI_NUMERICSERV);
+
+                std::string address;
+                if (result->ai_family == AF_INET6) {
+                    flog::debug("Resolved to [{}]:{}", hostBuf, serviceBuf);
+                }
+                else {
+                    flog::debug("Resolved to {}:{}", hostBuf, serviceBuf);
+                }
+
+                if (result->ai_family == AF_INET || result->ai_family == AF_INET6) {
+                    memset(storage, 0, sizeof(*storage));
+                    memcpy(storage, result->ai_addr, result->ai_addrlen);
+                    *len = result->ai_addrlen;
+                    success = true;
+                    break;
+                }
             }
         }
 
         freeaddrinfo(results);
-        return false;
+
+        return success;
     }
 
     void closeSocket(SockHandle_t sock) {
@@ -73,7 +106,11 @@ namespace net {
     // === Address functions ===
 
     Address::Address() {
-        memset(&addr, 0, sizeof(addr));
+        auto* addr = reinterpret_cast<sockaddr_in*>(&this->storage);
+        addr->sin_family = AF_INET;
+        addr->sin_addr.s_addr = htonl(0);
+        addr->sin_port = htons(0);
+        len = sizeof(*addr);
     }
 
     Address::Address(const std::string& host, int port) {
@@ -81,46 +118,68 @@ namespace net {
         init();
         
         // Lookup host
-        in_addr_t resolvedAddr;
-        if (!queryHost(&resolvedAddr, host)) {
+        if (!queryHost(&storage, &len, host, port)) {
             throw std::runtime_error("Unknown host");
         }
-        
-        // Build address
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = resolvedAddr;
-        addr.sin_port = htons(port);
     }
 
     Address::Address(IP_t ip, int port) {
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(ip);
-        addr.sin_port = htons(port);
+        auto* addr = reinterpret_cast<sockaddr_in*>(&this->storage);
+        addr->sin_family = AF_INET;
+        addr->sin_addr.s_addr = htonl(ip);
+        addr->sin_port = htons(port);
+        len = sizeof(*addr);
     }
 
     std::string Address::getIPStr() const {
-        char buf[128];
-        IP_t ip = getIP();
-        sprintf(buf, "%d.%d.%d.%d", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
-        return buf;
+        char host[NI_MAXHOST];
+
+        int err = getnameinfo(
+            reinterpret_cast<const sockaddr*>(&storage),
+            len,
+            host,
+            sizeof(host),
+            nullptr,
+            0,
+            NI_NUMERICHOST
+        );
+        if (!err) {
+            return "";
+        }
+
+        return host;
     }
 
     IP_t Address::getIP() const {
-        return htonl(addr.sin_addr.s_addr);
+        if (storage.ss_family == AF_INET) {
+            return htonl(reinterpret_cast<const sockaddr_in*>(&storage)->sin_addr.s_addr);
+        }
+
+        throw std::runtime_error("Not a IPv4 address");
     }
 
     void Address::setIP(IP_t ip) {
-        addr.sin_addr.s_addr = htonl(ip);
+        if (storage.ss_family == AF_INET) {
+            reinterpret_cast<sockaddr_in*>(&storage)->sin_addr.s_addr = htonl(ip);
+        }
+
+        throw std::runtime_error("Not a IPv4 address");
     }
 
     int Address::getPort() const {
-        return htons(addr.sin_port);
+        if (storage.ss_family == AF_INET) {
+            return htonl(reinterpret_cast<const sockaddr_in*>(&storage)->sin_port);
+        }
+
+        throw std::runtime_error("Not a IPv4 address");
     }
 
     void Address::setPort(int port) {
-        addr.sin_port = htons(port);
+        if (storage.ss_family == AF_INET) {
+            reinterpret_cast<sockaddr_in*>(&storage)->sin_port = htons(port);
+        }
+
+        throw std::runtime_error("Not a IPv4 address");
     }
 
     // === Socket functions ===
@@ -152,8 +211,10 @@ namespace net {
     }
 
     int Socket::send(const uint8_t* data, size_t len, const Address* dest) {
+        auto addr = (sockaddr*)(dest ? &dest->storage : (raddr ? &raddr->storage : NULL));
+        auto addr_len = dest ? dest->len : raddr ? raddr->len : 0;
         // Send data
-        int err = sendto(sock, (const char*)data, len, 0, (sockaddr*)(dest ? &dest->addr : (raddr ? &raddr->addr : NULL)), sizeof(sockaddr_in));
+        int err = sendto(sock, (const char*)data, len, 0, addr, addr_len);
 
         // On error, close socket
         if (err <= 0 && !WOULD_BLOCK) {
@@ -192,8 +253,7 @@ namespace net {
             }
 
             // Receive
-            int addrLen = sizeof(sockaddr_in);
-            int err = ::recvfrom(sock, (char*)&data[read], maxLen - read, 0,(sockaddr*)(dest ? &dest->addr : NULL), (socklen_t*)(dest ? &addrLen : NULL));
+            int err = ::recvfrom(sock, (char*)&data[read], maxLen - read, 0,(sockaddr*)(dest ? &dest->storage : NULL), (socklen_t*)(dest ? &dest->len : NULL));
             if (err <= 0 && !WOULD_BLOCK) {
                 close();
                 return err;
@@ -258,8 +318,7 @@ namespace net {
         }
 
         // Accept
-        int addrLen = sizeof(sockaddr_in);
-        SockHandle_t s = ::accept(sock, (sockaddr*)(dest ? &dest->addr : NULL), (socklen_t*)(dest ? &addrLen : NULL));
+        SockHandle_t s = ::accept(sock, (sockaddr*)(dest ? &dest->storage : NULL), (socklen_t*)(dest ? &dest->len : NULL));
         if ((int)s < 0) {
             if (!WOULD_BLOCK) { stop(); }
             return NULL;
@@ -333,7 +392,7 @@ namespace net {
         init();
 
         // Create socket
-        SockHandle_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        SockHandle_t s = socket(addr.storage.ss_family, SOCK_STREAM, IPPROTO_TCP);
         // TODO: Support non-blockign mode
 
 #ifndef _WIN32
@@ -350,7 +409,7 @@ namespace net {
 #endif
 
         // Bind socket to the port
-        if (bind(s, (sockaddr*)&addr.addr, sizeof(sockaddr_in))) {
+        if (bind(s, (sockaddr*)&addr.storage, addr.len)) {
             closeSocket(s);
             throw std::runtime_error("Could not bind socket");
             return NULL;
@@ -378,11 +437,13 @@ namespace net {
         init();
 
         // Create socket
-        SockHandle_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        SockHandle_t s = socket(addr.storage.ss_family, SOCK_STREAM, IPPROTO_TCP);
 
         // Connect to server
-        if (::connect(s, (sockaddr*)&addr.addr, sizeof(sockaddr_in))) {
+        if (::connect(s, (sockaddr*)&addr.storage, addr.len)) {
             closeSocket(s);
+            flog::warn("Could not connect, addr={}", addr.getIPStr());
+            flog::warn("Could not connect, len={}", addr.len);
             throw std::runtime_error("Could not connect");
             return NULL;
         }
@@ -403,7 +464,7 @@ namespace net {
         init();
 
         // Create socket
-        SockHandle_t s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        SockHandle_t s = socket(laddr.storage.ss_family, SOCK_DGRAM, IPPROTO_UDP);
 
         // If the remote address is multicast, allow multicast connections
         #ifdef _WIN32
@@ -418,7 +479,7 @@ namespace net {
         }
 
         // Bind socket to local port
-        if (bind(s, (sockaddr*)&laddr.addr, sizeof(sockaddr_in))) {
+        if (bind(s, reinterpret_cast<const sockaddr*>(&laddr.storage), laddr.len)) {
             closeSocket(s);
             throw std::runtime_error("Could not bind socket");
             return NULL;
